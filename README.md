@@ -10,8 +10,8 @@ wire
 
 ```yml
 server:
-  listen-address: 0.0.0.0:8890
-  service-name: sheepim-aichat-service
+  listen-address: 0.0.0.0:8894
+  service-name: personal-aichat-service
 
 etcd:
   endpoint:
