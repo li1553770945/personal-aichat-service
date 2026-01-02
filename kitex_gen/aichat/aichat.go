@@ -9,6 +9,14 @@ import (
 	"github.com/li1553770945/personal-aichat-service/kitex_gen/base"
 )
 
+const (
+	EventTypeMessage = "message"
+
+	EventTypeEventId = "event_id"
+
+	EventTypeMCP = "mcp"
+)
+
 type SendMessageReq struct {
 	Message string `thrift:"message,1,required" frugal:"1,required,string" json:"message"`
 }
@@ -39,7 +47,9 @@ var fieldIDToName_SendMessageReq = map[int16]string{
 }
 
 type SendMessageResp struct {
-	BaseResp *base.BaseResp `thrift:"baseResp,1,required" frugal:"1,required,base.BaseResp" json:"baseResp"`
+	BaseResp  *base.BaseResp `thrift:"baseResp,1,required" frugal:"1,required,base.BaseResp" json:"baseResp"`
+	EventType string         `thrift:"event_type,2,required" frugal:"2,required,string" json:"event_type"`
+	Data      string         `thrift:"data,3,required" frugal:"3,required,string" json:"data"`
 }
 
 func NewSendMessageResp() *SendMessageResp {
@@ -57,8 +67,22 @@ func (p *SendMessageResp) GetBaseResp() (v *base.BaseResp) {
 	}
 	return p.BaseResp
 }
+
+func (p *SendMessageResp) GetEventType() (v string) {
+	return p.EventType
+}
+
+func (p *SendMessageResp) GetData() (v string) {
+	return p.Data
+}
 func (p *SendMessageResp) SetBaseResp(val *base.BaseResp) {
 	p.BaseResp = val
+}
+func (p *SendMessageResp) SetEventType(val string) {
+	p.EventType = val
+}
+func (p *SendMessageResp) SetData(val string) {
+	p.Data = val
 }
 
 func (p *SendMessageResp) IsSetBaseResp() bool {
@@ -74,6 +98,8 @@ func (p *SendMessageResp) String() string {
 
 var fieldIDToName_SendMessageResp = map[int16]string{
 	1: "baseResp",
+	2: "event_type",
+	3: "data",
 }
 
 type AIChatService interface {

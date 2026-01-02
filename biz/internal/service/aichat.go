@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	constant "github.com/li1553770945/personal-aichat-service/biz/constant"
 	aichat "github.com/li1553770945/personal-aichat-service/kitex_gen/aichat"
 	base "github.com/li1553770945/personal-aichat-service/kitex_gen/base"
 )
@@ -115,9 +116,10 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 					// Send the chunk to client
 					err = stream.Send(ctx, &aichat.SendMessageResp{
 						BaseResp: &base.BaseResp{
-							Code:    200,
-							Message: difyResp.Answer,
+							Code: 200,
 						},
+						EventType: aichat.EventTypeMessage,
+						Data:      difyResp.Answer,
 					})
 					if err != nil {
 						return fmt.Errorf("failed to send stream response: %w", err)
@@ -127,7 +129,17 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 				// Streaming ended, send final response if needed
 				return nil
 			case "error":
-				return fmt.Errorf("dify API error: %s", difyResp.Message)
+				// 发送错误事件到客户端
+				err = stream.Send(ctx, &aichat.SendMessageResp{
+					BaseResp: &base.BaseResp{
+						Code:    constant.SystemError,
+						Message: difyResp.Message,
+					},
+				})
+				if err != nil {
+					return fmt.Errorf("failed to send stream response: %w", err)
+				}
+				return fmt.Errorf("dify api错误: %s", difyResp.Message)
 			}
 		}
 	}
