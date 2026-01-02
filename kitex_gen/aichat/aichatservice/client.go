@@ -5,23 +5,29 @@ package aichatservice
 import (
 	"context"
 	client "github.com/cloudwego/kitex/client"
-	callopt "github.com/cloudwego/kitex/client/callopt"
+	streamcall "github.com/cloudwego/kitex/client/callopt/streamcall"
+	streaming "github.com/cloudwego/kitex/pkg/streaming"
+	transport "github.com/cloudwego/kitex/transport"
 	aichat "github.com/li1553770945/personal-aichat-service/kitex_gen/aichat"
 )
 
 // Client is designed to provide IDL-compatible methods with call-option parameter for kitex framework.
 type Client interface {
-	SendMessage(ctx context.Context, req *aichat.SendMessageReq, callOptions ...callopt.Option) (r *aichat.SendMessageResp, err error)
+	SendMessage(ctx context.Context, req *aichat.SendMessageReq, callOptions ...streamcall.Option) (stream AIChatService_SendMessageClient, err error)
 }
+
+type AIChatService_SendMessageClient streaming.ServerStreamingClient[aichat.SendMessageResp]
 
 // NewClient creates a client for the service defined in IDL.
 func NewClient(destService string, opts ...client.Option) (Client, error) {
 	var options []client.Option
 	options = append(options, client.WithDestService(destService))
 
+	options = append(options, client.WithTransportProtocol(transport.TTHeaderStreaming))
+
 	options = append(options, opts...)
 
-	kc, err := client.NewClient(serviceInfoForClient(), options...)
+	kc, err := client.NewClient(serviceInfo(), options...)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +49,7 @@ type kAIChatServiceClient struct {
 	*kClient
 }
 
-func (p *kAIChatServiceClient) SendMessage(ctx context.Context, req *aichat.SendMessageReq, callOptions ...callopt.Option) (r *aichat.SendMessageResp, err error) {
-	ctx = client.NewCtxWithCallOptions(ctx, callOptions)
+func (p *kAIChatServiceClient) SendMessage(ctx context.Context, req *aichat.SendMessageReq, callOptions ...streamcall.Option) (stream AIChatService_SendMessageClient, err error) {
+	ctx = client.NewCtxWithCallOptions(ctx, streamcall.GetCallOptions(callOptions))
 	return p.kClient.SendMessage(ctx, req)
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	client "github.com/cloudwego/kitex/client"
 	kitex "github.com/cloudwego/kitex/pkg/serviceinfo"
+	streaming "github.com/cloudwego/kitex/pkg/streaming"
 	aichat "github.com/li1553770945/personal-aichat-service/kitex_gen/aichat"
 )
 
@@ -18,14 +19,12 @@ var serviceMethods = map[string]kitex.MethodInfo{
 		newAIChatServiceSendMessageArgs,
 		newAIChatServiceSendMessageResult,
 		false,
-		kitex.WithStreamingMode(kitex.StreamingNone),
+		kitex.WithStreamingMode(kitex.StreamingServer),
 	),
 }
 
 var (
-	aIChatServiceServiceInfo                = NewServiceInfo()
-	aIChatServiceServiceInfoForClient       = NewServiceInfoForClient()
-	aIChatServiceServiceInfoForStreamClient = NewServiceInfoForStreamClient()
+	aIChatServiceServiceInfo = NewServiceInfo()
 )
 
 // for server
@@ -33,52 +32,21 @@ func serviceInfo() *kitex.ServiceInfo {
 	return aIChatServiceServiceInfo
 }
 
-// for stream client
-func serviceInfoForStreamClient() *kitex.ServiceInfo {
-	return aIChatServiceServiceInfoForStreamClient
-}
-
-// for client
-func serviceInfoForClient() *kitex.ServiceInfo {
-	return aIChatServiceServiceInfoForClient
-}
-
-// NewServiceInfo creates a new ServiceInfo containing all methods
+// NewServiceInfo creates a new ServiceInfo
 func NewServiceInfo() *kitex.ServiceInfo {
-	return newServiceInfo(false, true, true)
+	return newServiceInfo()
 }
 
-// NewServiceInfo creates a new ServiceInfo containing non-streaming methods
-func NewServiceInfoForClient() *kitex.ServiceInfo {
-	return newServiceInfo(false, false, true)
-}
-func NewServiceInfoForStreamClient() *kitex.ServiceInfo {
-	return newServiceInfo(true, true, false)
-}
-
-func newServiceInfo(hasStreaming bool, keepStreamingMethods bool, keepNonStreamingMethods bool) *kitex.ServiceInfo {
+func newServiceInfo() *kitex.ServiceInfo {
 	serviceName := "AIChatService"
 	handlerType := (*aichat.AIChatService)(nil)
-	methods := map[string]kitex.MethodInfo{}
-	for name, m := range serviceMethods {
-		if m.IsStreaming() && !keepStreamingMethods {
-			continue
-		}
-		if !m.IsStreaming() && !keepNonStreamingMethods {
-			continue
-		}
-		methods[name] = m
-	}
 	extra := map[string]interface{}{
 		"PackageName": "aichat",
-	}
-	if hasStreaming {
-		extra["streaming"] = hasStreaming
 	}
 	svcInfo := &kitex.ServiceInfo{
 		ServiceName:     serviceName,
 		HandlerType:     handlerType,
-		Methods:         methods,
+		Methods:         serviceMethods,
 		PayloadCodec:    kitex.Thrift,
 		KiteXGenVersion: "v0.15.4",
 		Extra:           extra,
@@ -87,15 +55,18 @@ func newServiceInfo(hasStreaming bool, keepStreamingMethods bool, keepNonStreami
 }
 
 func sendMessageHandler(ctx context.Context, handler interface{}, arg, result interface{}) error {
-	realArg := arg.(*aichat.AIChatServiceSendMessageArgs)
-	realResult := result.(*aichat.AIChatServiceSendMessageResult)
-	success, err := handler.(aichat.AIChatService).SendMessage(ctx, realArg.Req)
+	st, err := streaming.GetServerStreamFromArg(arg)
 	if err != nil {
 		return err
 	}
-	realResult.Success = success
-	return nil
+	stream := streaming.NewServerStreamingServer[aichat.SendMessageResp](st)
+	req := new(aichat.SendMessageReq)
+	if err := stream.RecvMsg(ctx, req); err != nil {
+		return err
+	}
+	return handler.(aichat.AIChatService).SendMessage(ctx, req, stream)
 }
+
 func newAIChatServiceSendMessageArgs() interface{} {
 	return aichat.NewAIChatServiceSendMessageArgs()
 }
@@ -105,21 +76,28 @@ func newAIChatServiceSendMessageResult() interface{} {
 }
 
 type kClient struct {
-	c client.Client
+	c  client.Client
+	sc client.Streaming
 }
 
 func newServiceClient(c client.Client) *kClient {
 	return &kClient{
-		c: c,
+		c:  c,
+		sc: c.(client.Streaming),
 	}
 }
 
-func (p *kClient) SendMessage(ctx context.Context, req *aichat.SendMessageReq) (r *aichat.SendMessageResp, err error) {
-	var _args aichat.AIChatServiceSendMessageArgs
-	_args.Req = req
-	var _result aichat.AIChatServiceSendMessageResult
-	if err = p.c.Call(ctx, "SendMessage", &_args, &_result); err != nil {
-		return
+func (p *kClient) SendMessage(ctx context.Context, req *aichat.SendMessageReq) (AIChatService_SendMessageClient, error) {
+	st, err := p.sc.StreamX(ctx, "SendMessage")
+	if err != nil {
+		return nil, err
 	}
-	return _result.GetSuccess(), nil
+	stream := streaming.NewServerStreamingClient[aichat.SendMessageResp](st)
+	if err := stream.SendMsg(ctx, req); err != nil {
+		return nil, err
+	}
+	if err := stream.CloseSend(ctx); err != nil {
+		return nil, err
+	}
+	return stream, nil
 }

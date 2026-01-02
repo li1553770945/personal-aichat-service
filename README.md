@@ -2,7 +2,7 @@
 
 ## 初始化项目
 ```bash
-kitex -module "github.com/li1553770945/personal-aichat-service" -service personal-aichat-service idl/aichat.thrift
+kitex -streamx -module "github.com/li1553770945/personal-aichat-service" -service personal-aichat-service idl/aichat.thrift
 cd biz/infra/container
 wire
 ```

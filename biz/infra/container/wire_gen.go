@@ -21,7 +21,7 @@ func GetContainer(env string) *Container {
 	traceLogger := log.InitLog()
 	traceStruct := trace.InitTrace(configConfig)
 	client := rpc.NewAuthClient(configConfig)
-	iaiChatService := service.NewAChatService(client)
+	iaiChatService := service.NewAChatService(client, configConfig)
 	container := NewContainer(configConfig, traceLogger, traceStruct, iaiChatService)
 	return container
 }

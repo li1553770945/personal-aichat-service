@@ -26,12 +26,18 @@ type RpcConfig struct {
 	AuthServiceName string `yaml:"auth-service-name"`
 }
 
+type AIChatConfig struct {
+	Model  string `yaml:"model"`
+	APIKey string `yaml:"api-key"`
+}
+
 type Config struct {
 	Env                 string
 	ServerConfig        ServerConfig        `yaml:"server"`
 	OpenTelemetryConfig OpenTelemetryConfig `yaml:"open-telemetry"`
 	RpcConfig           RpcConfig           `yaml:"rpc"`
 	EtcdConfig          EtcdConfig          `yaml:"etcd"`
+	AIChatConfig        AIChatConfig        `yaml:"aichat"`
 }
 
 func GetConfig(env string) *Config {

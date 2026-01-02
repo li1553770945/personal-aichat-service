@@ -12,5 +12,5 @@ struct SendMessageResp{
 
 
 service AIChatService {
-    SendMessageResp SendMessage(SendMessageReq req)
+    SendMessageResp SendMessage(SendMessageReq req)(streaming.mode="server")
 }

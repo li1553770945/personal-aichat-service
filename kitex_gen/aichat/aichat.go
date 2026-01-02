@@ -5,6 +5,7 @@ package aichat
 import (
 	"context"
 	"fmt"
+	"github.com/cloudwego/kitex/pkg/streaming"
 	"github.com/li1553770945/personal-aichat-service/kitex_gen/base"
 )
 
@@ -76,7 +77,7 @@ var fieldIDToName_SendMessageResp = map[int16]string{
 }
 
 type AIChatService interface {
-	SendMessage(ctx context.Context, req *SendMessageReq) (r *SendMessageResp, err error)
+	SendMessage(ctx context.Context, req *SendMessageReq, stream AIChatService_SendMessageServer) (err error)
 }
 
 type AIChatServiceSendMessageArgs struct {
@@ -154,3 +155,5 @@ func (p *AIChatServiceSendMessageResult) String() string {
 var fieldIDToName_AIChatServiceSendMessageResult = map[int16]string{
 	0: "success",
 }
+
+type AIChatService_SendMessageServer streaming.ServerStreamingServer[SendMessageResp]
