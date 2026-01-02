@@ -19,6 +19,5 @@ func (s *AIChatServiceImpl) SendMessage(ctx context.Context, req *aichat.SendMes
 	if err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
-
-	return nil
+	return
 }
