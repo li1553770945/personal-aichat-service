@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -120,6 +121,9 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 	// 增加 Buffer 大小防止单行过长导致 panic
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
+	haveSendEmotion := false
+	bufferResponse := ""
+	re := regexp.MustCompile(`<<.{1,8}?>>`)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -173,18 +177,70 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 				continue
 			}
 
-			// 发送流式数据给客户端
-			if err := stream.Send(ctx, &aichat.SendMessageResp{
-				BaseResp:  &base.BaseResp{Code: 200},
-				EventType: constant.EventTypeMessage,
-				Data:      difyResp.Answer,
-			}); err != nil {
-				return fmt.Errorf("stream send failed: %w", err)
-			}
+			// 还没有发送表情
+			if !haveSendEmotion {
+				bufferResponse += difyResp.Answer
+				// 已经有表情信息
+				// 1. 尝试检测正则
+				if loc := re.FindStringIndex(bufferResponse); loc != nil {
+					// loc[0] 是开始位置, loc[1] 是结束位置
+					matchStr := bufferResponse[loc[0]:loc[1]]
 
-		case "message_end":
-			// 消息结束，通常包含 usage 信息，这里可以选择记录日志或不做处理
-			return nil
+					// 发送表情事件
+					if err := stream.Send(ctx, &aichat.SendMessageResp{
+						BaseResp:  &base.BaseResp{Code: 200},
+						EventType: constant.EventTypeMotion, // 这里的 Motion 是 "<<joy>>"
+						Data:      matchStr,
+					}); err != nil {
+						return fmt.Errorf("stream send motion failed: %w", err)
+					}
+
+					// 标记已发送
+					haveSendEmotion = true
+
+					// 将 buffer 中的表情部分移除
+					// 注意：这里只替换找到的那一个，防止误伤（虽然开头一般也就一个）
+					bufferResponse = bufferResponse[:loc[0]] + bufferResponse[loc[1]:]
+
+					// 如果移除表情后 buffer 还有剩余文字（例如 "<<joy>>你好" -> "你好"）
+					// 或者 buffer 里本来就有表情前面的文字（例如 "嘿<<joy>>" -> "嘿"）
+					if len(bufferResponse) > 0 {
+						if err := stream.Send(ctx, &aichat.SendMessageResp{
+							BaseResp:  &base.BaseResp{Code: 200},
+							EventType: constant.EventTypeMessage,
+							Data:      bufferResponse,
+						}); err != nil {
+							return fmt.Errorf("stream send buffer failed: %w", err)
+						}
+					}
+					bufferResponse = "" // 清空 buffer
+
+				} else if len(bufferResponse) > constant.MaxBufferLen {
+					// 2. 如果缓冲区超过安全长度还没匹配到，说明开头没有表情
+					// 直接将缓冲区内容作为普通消息发出
+					if err := stream.Send(ctx, &aichat.SendMessageResp{
+						BaseResp:  &base.BaseResp{Code: 200},
+						EventType: constant.EventTypeMessage,
+						Data:      bufferResponse,
+					}); err != nil {
+						return fmt.Errorf("stream send flush failed: %w", err)
+					}
+					bufferResponse = ""
+					haveSendEmotion = true // 以后不再检测
+				}
+				// 3. 如果既没匹配到，长度也不够，就 continue 等待下一帧数据拼接
+
+			} else {
+				// 发送流式数据给客户端
+				if err := stream.Send(ctx, &aichat.SendMessageResp{
+					BaseResp:  &base.BaseResp{Code: 200},
+					EventType: constant.EventTypeMessage,
+					Data:      difyResp.Answer,
+				}); err != nil {
+					return fmt.Errorf("stream send failed: %w", err)
+				}
+			}
+			continue
 
 		case "agent_message": // 如果你的应用是 Agent 类型
 			if err := stream.Send(ctx, &aichat.SendMessageResp{
@@ -194,6 +250,7 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 			}); err != nil {
 				return fmt.Errorf("stream send agent message failed: %w", err)
 			}
+			continue
 
 		case "error":
 			klog.Errorf("dify stream error event: %s", difyResp.Message)
@@ -210,10 +267,22 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 			// 保持连接，忽略即可
 			continue
 		}
+
 	}
 
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scanner error: %w", err)
+	}
+
+	// 兜底，防止就生成了不超过10个字符并且没有表情控制，也要发送出去
+	if bufferResponse != "" {
+		if err := stream.Send(ctx, &aichat.SendMessageResp{
+			BaseResp:  &base.BaseResp{Code: 200},
+			EventType: constant.EventTypeMessage,
+			Data:      bufferResponse,
+		}); err != nil {
+			return fmt.Errorf("stream send failed: %w", err)
+		}
 	}
 
 	return nil
