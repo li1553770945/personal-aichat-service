@@ -4,10 +4,8 @@ include "base.thrift"
 
 struct SendMessageReq{
     1: required string message
+    2: optional string conversation_id
 }
-const string EventTypeMessage = "message"
-const string EventTypeEventId = "event_id"
-const string EventTypeMCP = "mcp"
 
 struct SendMessageResp{
     1: required base.BaseResp baseResp

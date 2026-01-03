@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/kitex/pkg/klog"
+	"github.com/li1553770945/personal-aichat-service/biz/constant"
 	aichat "github.com/li1553770945/personal-aichat-service/kitex_gen/aichat"
 	base "github.com/li1553770945/personal-aichat-service/kitex_gen/base"
 )
@@ -64,19 +65,19 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 	if req.Message == "" {
 		return fmt.Errorf("query message cannot be empty")
 	}
-
+	conversationId := ""
+	messageId := ""
+	if req.ConversationId != nil {
+		conversationId = *req.ConversationId
+	}
 	// 2. 构建请求体
 	difyReq := DifyRequest{
-		Query:        req.Message,
-		Inputs:       map[string]interface{}{}, // 显式初始化为空 map
-		ResponseMode: "streaming",
-		User:         "default_user_001", // 建议使用更有意义的 ID，如 req.UserId
+		Query:          req.Message,
+		ConversationID: conversationId,
+		Inputs:         map[string]interface{}{}, // 显式初始化为空 map
+		ResponseMode:   "streaming",
+		User:           "default_user_001", // 建议使用更有意义的 ID，如 req.UserId
 	}
-
-	// 如果请求中包含 ConversationID，则透传，实现上下文对话
-	// if req.ConversationID != "" {
-	//    difyReq.ConversationID = req.ConversationID
-	// }
 
 	reqBody, err := json.Marshal(difyReq)
 	if err != nil {
@@ -120,11 +121,6 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	var (
-		conversationID string
-		messageID      string
-	)
-
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -150,12 +146,29 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 		case "message":
 
 			// 记录 ID 用于后续可能的逻辑
-			if conversationID == "" {
-				conversationID = difyResp.ConversationID
+			if conversationId == "" {
+				err := stream.Send(ctx, &aichat.SendMessageResp{
+					BaseResp:  &base.BaseResp{Code: 200},
+					EventType: constant.EventTypeConversationId,
+					Data:      difyResp.ConversationID,
+				})
+				if err != nil {
+					return fmt.Errorf("stream send agent message failed: %w", err)
+				}
+				conversationId = difyResp.ConversationID
 			}
-			if messageID == "" {
-				messageID = difyResp.MessageID
+			if messageId == "" {
+				err := stream.Send(ctx, &aichat.SendMessageResp{
+					BaseResp:  &base.BaseResp{Code: 200},
+					EventType: constant.EventTypeMessageId,
+					Data:      difyResp.MessageID,
+				})
+				if err != nil {
+					return fmt.Errorf("stream send agent message failed: %w", err)
+				}
+				messageId = difyResp.MessageID
 			}
+
 			if difyResp.Answer == "" {
 				continue
 			}
@@ -163,7 +176,7 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 			// 发送流式数据给客户端
 			if err := stream.Send(ctx, &aichat.SendMessageResp{
 				BaseResp:  &base.BaseResp{Code: 200},
-				EventType: aichat.EventTypeMessage,
+				EventType: constant.EventTypeMessage,
 				Data:      difyResp.Answer,
 			}); err != nil {
 				return fmt.Errorf("stream send failed: %w", err)
@@ -176,7 +189,7 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 		case "agent_message": // 如果你的应用是 Agent 类型
 			if err := stream.Send(ctx, &aichat.SendMessageResp{
 				BaseResp:  &base.BaseResp{Code: 200},
-				EventType: aichat.EventTypeMessage,
+				EventType: constant.EventTypeMessage,
 				Data:      difyResp.Answer,
 			}); err != nil {
 				return fmt.Errorf("stream send agent message failed: %w", err)
@@ -184,6 +197,13 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 
 		case "error":
 			klog.Errorf("dify stream error event: %s", difyResp.Message)
+			if err := stream.Send(ctx, &aichat.SendMessageResp{
+				BaseResp:  &base.BaseResp{Code: 200},
+				EventType: constant.EventTypeError,
+				Data:      difyResp.Message,
+			}); err != nil {
+				return fmt.Errorf("stream send agent message failed: %w", err)
+			}
 			return fmt.Errorf("dify stream error: %s", difyResp.Message)
 
 		case "ping":

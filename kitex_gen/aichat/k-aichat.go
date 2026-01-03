@@ -59,6 +59,20 @@ func (p *SendMessageReq) FastRead(buf []byte) (int, error) {
 					goto SkipFieldError
 				}
 			}
+		case 2:
+			if fieldTypeId == thrift.STRING {
+				l, err = p.FastReadField2(buf[offset:])
+				offset += l
+				if err != nil {
+					goto ReadFieldError
+				}
+			} else {
+				l, err = thrift.Binary.Skip(buf[offset:], fieldTypeId)
+				offset += l
+				if err != nil {
+					goto SkipFieldError
+				}
+			}
 		default:
 			l, err = thrift.Binary.Skip(buf[offset:], fieldTypeId)
 			offset += l
@@ -97,6 +111,20 @@ func (p *SendMessageReq) FastReadField1(buf []byte) (int, error) {
 	return offset, nil
 }
 
+func (p *SendMessageReq) FastReadField2(buf []byte) (int, error) {
+	offset := 0
+
+	var _field *string
+	if v, l, err := thrift.Binary.ReadString(buf[offset:]); err != nil {
+		return offset, err
+	} else {
+		offset += l
+		_field = &v
+	}
+	p.ConversationId = _field
+	return offset, nil
+}
+
 func (p *SendMessageReq) FastWrite(buf []byte) int {
 	return p.FastWriteNocopy(buf, nil)
 }
@@ -105,6 +133,7 @@ func (p *SendMessageReq) FastWriteNocopy(buf []byte, w thrift.NocopyWriter) int 
 	offset := 0
 	if p != nil {
 		offset += p.fastWriteField1(buf[offset:], w)
+		offset += p.fastWriteField2(buf[offset:], w)
 	}
 	offset += thrift.Binary.WriteFieldStop(buf[offset:])
 	return offset
@@ -114,6 +143,7 @@ func (p *SendMessageReq) BLength() int {
 	l := 0
 	if p != nil {
 		l += p.field1Length()
+		l += p.field2Length()
 	}
 	l += thrift.Binary.FieldStopLength()
 	return l
@@ -126,10 +156,28 @@ func (p *SendMessageReq) fastWriteField1(buf []byte, w thrift.NocopyWriter) int 
 	return offset
 }
 
+func (p *SendMessageReq) fastWriteField2(buf []byte, w thrift.NocopyWriter) int {
+	offset := 0
+	if p.IsSetConversationId() {
+		offset += thrift.Binary.WriteFieldBegin(buf[offset:], thrift.STRING, 2)
+		offset += thrift.Binary.WriteStringNocopy(buf[offset:], w, *p.ConversationId)
+	}
+	return offset
+}
+
 func (p *SendMessageReq) field1Length() int {
 	l := 0
 	l += thrift.Binary.FieldBeginLength()
 	l += thrift.Binary.StringLengthNocopy(p.Message)
+	return l
+}
+
+func (p *SendMessageReq) field2Length() int {
+	l := 0
+	if p.IsSetConversationId() {
+		l += thrift.Binary.FieldBeginLength()
+		l += thrift.Binary.StringLengthNocopy(*p.ConversationId)
+	}
 	return l
 }
 

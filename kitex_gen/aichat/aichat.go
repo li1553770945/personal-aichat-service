@@ -9,16 +9,9 @@ import (
 	"github.com/li1553770945/personal-aichat-service/kitex_gen/base"
 )
 
-const (
-	EventTypeMessage = "message"
-
-	EventTypeEventId = "event_id"
-
-	EventTypeMCP = "mcp"
-)
-
 type SendMessageReq struct {
-	Message string `thrift:"message,1,required" frugal:"1,required,string" json:"message"`
+	Message        string  `thrift:"message,1,required" frugal:"1,required,string" json:"message"`
+	ConversationId *string `thrift:"conversation_id,2,optional" frugal:"2,optional,string" json:"conversation_id,omitempty"`
 }
 
 func NewSendMessageReq() *SendMessageReq {
@@ -31,8 +24,24 @@ func (p *SendMessageReq) InitDefault() {
 func (p *SendMessageReq) GetMessage() (v string) {
 	return p.Message
 }
+
+var SendMessageReq_ConversationId_DEFAULT string
+
+func (p *SendMessageReq) GetConversationId() (v string) {
+	if !p.IsSetConversationId() {
+		return SendMessageReq_ConversationId_DEFAULT
+	}
+	return *p.ConversationId
+}
 func (p *SendMessageReq) SetMessage(val string) {
 	p.Message = val
+}
+func (p *SendMessageReq) SetConversationId(val *string) {
+	p.ConversationId = val
+}
+
+func (p *SendMessageReq) IsSetConversationId() bool {
+	return p.ConversationId != nil
 }
 
 func (p *SendMessageReq) String() string {
@@ -44,6 +53,7 @@ func (p *SendMessageReq) String() string {
 
 var fieldIDToName_SendMessageReq = map[int16]string{
 	1: "message",
+	2: "conversation_id",
 }
 
 type SendMessageResp struct {
