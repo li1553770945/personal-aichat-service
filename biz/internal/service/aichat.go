@@ -150,7 +150,7 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 		case "message":
 
 			// 记录 ID 用于后续可能的逻辑
-			if conversationId == "" {
+			if conversationId == "" && difyResp.ConversationID != "" {
 				err := stream.Send(ctx, &aichat.SendMessageResp{
 					BaseResp:  &base.BaseResp{Code: 200},
 					EventType: constant.EventTypeConversationId,
@@ -161,7 +161,7 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 				}
 				conversationId = difyResp.ConversationID
 			}
-			if messageId == "" {
+			if messageId == "" && difyResp.MessageID != "" {
 				err := stream.Send(ctx, &aichat.SendMessageResp{
 					BaseResp:  &base.BaseResp{Code: 200},
 					EventType: constant.EventTypeMessageId,
