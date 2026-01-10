@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -46,18 +45,104 @@ type DifyErrorResponse struct {
 	Status  int    `json:"status"`
 }
 
-// DifyStreamResponse SSE 响应结构
-type DifyStreamResponse struct {
+// DifySSEEnvelope covers both chat assistant and chatflow(workflow) streaming payloads.
+// For chatflow, the important events are:
+// - workflow_started / workflow_finished
+// - node_started / node_finished
+// - message / message_end
+type DifySSEEnvelope struct {
 	Event          string `json:"event"`
-	MessageID      string `json:"message_id"`
 	ConversationID string `json:"conversation_id"`
-	Answer         string `json:"answer"`
+	MessageID      string `json:"message_id"`
 	CreatedAt      int64  `json:"created_at"`
 	TaskID         string `json:"task_id"`
-	// Error event fields
+	WorkflowRunID  string `json:"workflow_run_id"`
+
+	// message event fields
+	ID                   string   `json:"id"`
+	Answer               string   `json:"answer"`
+	FromVariableSelector []string `json:"from_variable_selector"`
+
+	// workflow/node event payload
+	Data json.RawMessage `json:"data"`
+
+	// message_end metadata
+	Metadata json.RawMessage `json:"metadata"`
+
+	// error event fields
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	Status  int    `json:"status,omitempty"`
+}
+
+type difyWorkflowStartedData struct {
+	ID         string                 `json:"id"`
+	WorkflowID string                 `json:"workflow_id"`
+	Inputs     map[string]interface{} `json:"inputs"`
+	CreatedAt  int64                  `json:"created_at"`
+}
+
+type difyWorkflowFinishedData struct {
+	ID         string                 `json:"id"`
+	WorkflowID string                 `json:"workflow_id"`
+	Status     string                 `json:"status"`
+	Outputs    map[string]interface{} `json:"outputs"`
+	Error      interface{}            `json:"error"`
+	Elapsed    float64                `json:"elapsed_time"`
+	TotalSteps int                    `json:"total_steps"`
+}
+
+type difyNodeData struct {
+	ID       string `json:"id"`
+	NodeID   string `json:"node_id"`
+	NodeType string `json:"node_type"`
+	Title    string `json:"title"`
+	Index    int    `json:"index"`
+
+	Status      string      `json:"status,omitempty"`
+	Error       interface{} `json:"error,omitempty"`
+	ElapsedTime float64     `json:"elapsed_time,omitempty"`
+}
+
+type outgoingWorkflowEvent struct {
+	Event         string  `json:"event"`
+	WorkflowRunID string  `json:"workflow_run_id,omitempty"`
+	WorkflowID    string  `json:"workflow_id,omitempty"`
+	TaskID        string  `json:"task_id,omitempty"`
+	CreatedAt     int64   `json:"created_at,omitempty"`
+	Status        string  `json:"status,omitempty"`
+	ElapsedTime   float64 `json:"elapsed_time,omitempty"`
+	TotalSteps    int     `json:"total_steps,omitempty"`
+}
+
+type outgoingNodeEvent struct {
+	Event         string  `json:"event"`
+	WorkflowRunID string  `json:"workflow_run_id,omitempty"`
+	TaskID        string  `json:"task_id,omitempty"`
+	NodeID        string  `json:"node_id,omitempty"`
+	NodeType      string  `json:"node_type,omitempty"`
+	Title         string  `json:"title,omitempty"`
+	Index         int     `json:"index,omitempty"`
+	Status        string  `json:"status,omitempty"`
+	ElapsedTime   float64 `json:"elapsed_time,omitempty"`
+}
+
+func sendStreamEvent(ctx context.Context, stream aichat.AIChatService_SendMessageServer, eventType string, data string) error {
+	return stream.Send(ctx, &aichat.SendMessageResp{
+		BaseResp:  &base.BaseResp{Code: 200},
+		EventType: eventType,
+		Data:      data,
+	})
+}
+
+func shouldForwardChatflowMessage(envelope DifySSEEnvelope) bool {
+	// For chatflow, "message" chunks may come from different nodes/variables.
+	// We only treat the LLM node streaming output (usually variable "text") as user-visible chat content.
+	if len(envelope.FromVariableSelector) >= 2 {
+		return envelope.FromVariableSelector[1] == "text"
+	}
+	// Backward compatibility: assistant apps may not include from_variable_selector.
+	return true
 }
 
 // SendMessage 发送消息到 dify api 并流式返回响应
@@ -67,7 +152,6 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 		return fmt.Errorf("query message cannot be empty")
 	}
 	conversationId := ""
-	messageId := ""
 	if req.ConversationId != nil {
 		conversationId = *req.ConversationId
 	}
@@ -118,12 +202,12 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 
 	// 6. 流式解析响应
 	scanner := bufio.NewScanner(resp.Body)
-	// 增加 Buffer 大小防止单行过长导致 panic
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-	haveSendEmotion := false
-	bufferResponse := ""
-	re := regexp.MustCompile(`<<.{1,8}?>>`)
+	// 增加 Buffer 大小防止单行过长导致 scanner 停止（chatflow 的 node_finished/outputs 可能很大）
+	buf := make([]byte, 0, 256*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	sentConversationID := conversationId != ""
+	sentMessageID := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -139,132 +223,145 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 			continue
 		}
 
-		var difyResp DifyStreamResponse
-		if err := json.Unmarshal([]byte(dataStr), &difyResp); err != nil {
+		// Some SSE servers may send keep-alive payloads like [DONE]
+		if dataStr == "[DONE]" {
+			continue
+		}
+
+		var envelope DifySSEEnvelope
+		if err := json.Unmarshal([]byte(dataStr), &envelope); err != nil {
 			klog.Warnf("unmarshal stream data failed: %v, data: %s", err, dataStr)
 			continue
 		}
 
+		// best-effort: send conversationId/messageId as early as possible
+		if !sentConversationID && envelope.ConversationID != "" {
+			if err := sendStreamEvent(ctx, stream, constant.EventTypeConversationId, envelope.ConversationID); err != nil {
+				return fmt.Errorf("stream send conversationId failed: %w", err)
+			}
+			sentConversationID = true
+			conversationId = envelope.ConversationID
+		}
+		if !sentMessageID && envelope.MessageID != "" {
+			if err := sendStreamEvent(ctx, stream, constant.EventTypeMessageId, envelope.MessageID); err != nil {
+				return fmt.Errorf("stream send messageId failed: %w", err)
+			}
+			sentMessageID = true
+		}
+
 		// 处理不同事件类型
-		switch difyResp.Event {
-		case "message":
-
-			// 记录 ID 用于后续可能的逻辑
-			if conversationId == "" && difyResp.ConversationID != "" {
-				err := stream.Send(ctx, &aichat.SendMessageResp{
-					BaseResp:  &base.BaseResp{Code: 200},
-					EventType: constant.EventTypeConversationId,
-					Data:      difyResp.ConversationID,
-				})
-				if err != nil {
-					return fmt.Errorf("stream send agent message failed: %w", err)
-				}
-				conversationId = difyResp.ConversationID
-			}
-			if messageId == "" && difyResp.MessageID != "" {
-				err := stream.Send(ctx, &aichat.SendMessageResp{
-					BaseResp:  &base.BaseResp{Code: 200},
-					EventType: constant.EventTypeMessageId,
-					Data:      difyResp.MessageID,
-				})
-				if err != nil {
-					return fmt.Errorf("stream send agent message failed: %w", err)
-				}
-				messageId = difyResp.MessageID
-			}
-
-			if difyResp.Answer == "" {
+		switch envelope.Event {
+		case "message", "agent_message":
+			if envelope.Answer == "" {
 				continue
 			}
-
-			// 还没有发送表情
-			if !haveSendEmotion {
-				bufferResponse += difyResp.Answer
-				// 已经有表情信息
-				// 1. 尝试检测正则
-				if loc := re.FindStringIndex(bufferResponse); loc != nil {
-					// loc[0] 是开始位置, loc[1] 是结束位置
-					matchStr := bufferResponse[loc[0]:loc[1]]
-
-					// 发送表情事件
-					if err := stream.Send(ctx, &aichat.SendMessageResp{
-						BaseResp:  &base.BaseResp{Code: 200},
-						EventType: constant.EventTypeMotion, // 这里的 Motion 是 "<<joy>>"
-						Data:      matchStr,
-					}); err != nil {
-						return fmt.Errorf("stream send motion failed: %w", err)
-					}
-
-					// 标记已发送
-					haveSendEmotion = true
-
-					// 将 buffer 中的表情部分移除
-					// 注意：这里只替换找到的那一个，防止误伤（虽然开头一般也就一个）
-					bufferResponse = bufferResponse[:loc[0]] + bufferResponse[loc[1]:]
-
-					// 如果移除表情后 buffer 还有剩余文字（例如 "<<joy>>你好" -> "你好"）
-					// 或者 buffer 里本来就有表情前面的文字（例如 "嘿<<joy>>" -> "嘿"）
-					if len(bufferResponse) > 0 {
-						if err := stream.Send(ctx, &aichat.SendMessageResp{
-							BaseResp:  &base.BaseResp{Code: 200},
-							EventType: constant.EventTypeMessage,
-							Data:      bufferResponse,
-						}); err != nil {
-							return fmt.Errorf("stream send buffer failed: %w", err)
-						}
-					}
-					bufferResponse = "" // 清空 buffer
-
-				} else if len(bufferResponse) > constant.MaxBufferLen {
-					// 2. 如果缓冲区超过安全长度还没匹配到，说明开头没有表情
-					// 直接将缓冲区内容作为普通消息发出
-					if err := stream.Send(ctx, &aichat.SendMessageResp{
-						BaseResp:  &base.BaseResp{Code: 200},
-						EventType: constant.EventTypeMessage,
-						Data:      bufferResponse,
-					}); err != nil {
-						return fmt.Errorf("stream send flush failed: %w", err)
-					}
-					bufferResponse = ""
-					haveSendEmotion = true // 以后不再检测
-				}
-				// 3. 如果既没匹配到，长度也不够，就 continue 等待下一帧数据拼接
-
-			} else {
-				// 发送流式数据给客户端
-				if err := stream.Send(ctx, &aichat.SendMessageResp{
-					BaseResp:  &base.BaseResp{Code: 200},
-					EventType: constant.EventTypeMessage,
-					Data:      difyResp.Answer,
-				}); err != nil {
-					return fmt.Errorf("stream send failed: %w", err)
-				}
+			if !shouldForwardChatflowMessage(envelope) {
+				continue
 			}
-			continue
-
-		case "agent_message": // 如果你的应用是 Agent 类型
-			if err := stream.Send(ctx, &aichat.SendMessageResp{
-				BaseResp:  &base.BaseResp{Code: 200},
-				EventType: constant.EventTypeMessage,
-				Data:      difyResp.Answer,
-			}); err != nil {
-				return fmt.Errorf("stream send agent message failed: %w", err)
+			if err := sendStreamEvent(ctx, stream, constant.EventTypeMessage, envelope.Answer); err != nil {
+				return fmt.Errorf("stream send message failed: %w", err)
 			}
-			continue
+
+		case "workflow_started":
+			var wf difyWorkflowStartedData
+			if len(envelope.Data) > 0 {
+				_ = json.Unmarshal(envelope.Data, &wf)
+			}
+			payload := outgoingWorkflowEvent{
+				Event:         envelope.Event,
+				WorkflowRunID: envelope.WorkflowRunID,
+				WorkflowID:    wf.WorkflowID,
+				TaskID:        envelope.TaskID,
+				CreatedAt:     envelope.CreatedAt,
+			}
+			b, _ := json.Marshal(payload)
+			if err := sendStreamEvent(ctx, stream, constant.EventTypeWorkflowStarted, string(b)); err != nil {
+				return fmt.Errorf("stream send workflowStarted failed: %w", err)
+			}
+
+		case "workflow_finished":
+			var wf difyWorkflowFinishedData
+			if len(envelope.Data) > 0 {
+				_ = json.Unmarshal(envelope.Data, &wf)
+			}
+			payload := outgoingWorkflowEvent{
+				Event:         envelope.Event,
+				WorkflowRunID: envelope.WorkflowRunID,
+				WorkflowID:    wf.WorkflowID,
+				TaskID:        envelope.TaskID,
+				CreatedAt:     envelope.CreatedAt,
+				Status:        wf.Status,
+				ElapsedTime:   wf.Elapsed,
+				TotalSteps:    wf.TotalSteps,
+			}
+			b, _ := json.Marshal(payload)
+			if err := sendStreamEvent(ctx, stream, constant.EventTypeWorkflowFinished, string(b)); err != nil {
+				return fmt.Errorf("stream send workflowFinished failed: %w", err)
+			}
+
+		case "node_started":
+			var node difyNodeData
+			if len(envelope.Data) > 0 {
+				_ = json.Unmarshal(envelope.Data, &node)
+			}
+			payload := outgoingNodeEvent{
+				Event:         envelope.Event,
+				WorkflowRunID: envelope.WorkflowRunID,
+				TaskID:        envelope.TaskID,
+				NodeID:        node.NodeID,
+				NodeType:      node.NodeType,
+				Title:         node.Title,
+				Index:         node.Index,
+			}
+			b, _ := json.Marshal(payload)
+			if err := sendStreamEvent(ctx, stream, constant.EventTypeNodeStarted, string(b)); err != nil {
+				return fmt.Errorf("stream send nodeStarted failed: %w", err)
+			}
+
+		case "node_finished":
+			var node difyNodeData
+			if len(envelope.Data) > 0 {
+				_ = json.Unmarshal(envelope.Data, &node)
+			}
+			payload := outgoingNodeEvent{
+				Event:         envelope.Event,
+				WorkflowRunID: envelope.WorkflowRunID,
+				TaskID:        envelope.TaskID,
+				NodeID:        node.NodeID,
+				NodeType:      node.NodeType,
+				Title:         node.Title,
+				Index:         node.Index,
+				Status:        node.Status,
+				ElapsedTime:   node.ElapsedTime,
+			}
+			b, _ := json.Marshal(payload)
+			if err := sendStreamEvent(ctx, stream, constant.EventTypeNodeFinished, string(b)); err != nil {
+				return fmt.Errorf("stream send nodeFinished failed: %w", err)
+			}
+
+		case "message_end":
+			// metadata can be very large; forward as-is for clients who need usage/token info
+			meta := "{}"
+			if len(envelope.Metadata) > 0 {
+				meta = string(envelope.Metadata)
+			}
+			if err := sendStreamEvent(ctx, stream, constant.EventTypeMessageEnd, meta); err != nil {
+				return fmt.Errorf("stream send messageEnd failed: %w", err)
+			}
 
 		case "error":
-			klog.Errorf("dify stream error event: %s", difyResp.Message)
-			if err := stream.Send(ctx, &aichat.SendMessageResp{
-				BaseResp:  &base.BaseResp{Code: 200},
-				EventType: constant.EventTypeError,
-				Data:      difyResp.Message,
-			}); err != nil {
-				return fmt.Errorf("stream send agent message failed: %w", err)
+			msg := envelope.Message
+			if msg == "" {
+				msg = "dify stream error"
 			}
-			return fmt.Errorf("dify stream error: %s", difyResp.Message)
+			klog.Errorf("dify stream error event: code=%s status=%d message=%s", envelope.Code, envelope.Status, msg)
+			_ = sendStreamEvent(ctx, stream, constant.EventTypeError, msg)
+			return fmt.Errorf("dify stream error: %s", msg)
 
 		case "ping":
-			// 保持连接，忽略即可
+			continue
+		default:
+			// ignore unknown events for forward compatibility
 			continue
 		}
 
@@ -273,17 +370,5 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scanner error: %w", err)
 	}
-
-	// 兜底，防止就生成了不超过10个字符并且没有表情控制，也要发送出去
-	if bufferResponse != "" {
-		if err := stream.Send(ctx, &aichat.SendMessageResp{
-			BaseResp:  &base.BaseResp{Code: 200},
-			EventType: constant.EventTypeMessage,
-			Data:      bufferResponse,
-		}); err != nil {
-			return fmt.Errorf("stream send failed: %w", err)
-		}
-	}
-
 	return nil
 }
