@@ -30,12 +30,13 @@ var globalHTTPClient = &http.Client{
 
 // DifyRequest Dify API 请求结构
 type DifyRequest struct {
-	Query          string                 `json:"query"`
-	Inputs         map[string]interface{} `json:"inputs"` // 去掉 omitempty，确保传递 {}
-	ResponseMode   string                 `json:"response_mode"`
-	User           string                 `json:"user"`
-	ConversationID string                 `json:"conversation_id,omitempty"` // 为空时不传，代表新会话
-	Files          []interface{}          `json:"files,omitempty"`
+	Query            string                 `json:"query"`
+	Inputs           map[string]interface{} `json:"inputs"` // 去掉 omitempty，确保传递 {}
+	ResponseMode     string                 `json:"response_mode"`
+	AutoGenerateName bool                   `json:"auto_generate_name"`
+	User             string                 `json:"user"`
+	ConversationID   string                 `json:"conversation_id,omitempty"` // 为空时不传，代表新会话
+	Files            []interface{}          `json:"files,omitempty"`
 }
 
 // DifyErrorResponse Dify API 错误响应结构
@@ -157,11 +158,12 @@ func (s *AIChatService) SendMessage(ctx context.Context, req *aichat.SendMessage
 	}
 	// 2. 构建请求体
 	difyReq := DifyRequest{
-		Query:          req.Message,
-		ConversationID: conversationId,
-		Inputs:         map[string]interface{}{}, // 显式初始化为空 map
-		ResponseMode:   "streaming",
-		User:           "default_user_001", // 建议使用更有意义的 ID，如 req.UserId
+		Query:            req.Message,
+		ConversationID:   conversationId,
+		Inputs:           map[string]interface{}{}, // 显式初始化为空 map
+		ResponseMode:     "streaming",
+		AutoGenerateName: false,
+		User:             "default_user_001", // 建议使用更有意义的 ID，如 req.UserId
 	}
 
 	reqBody, err := json.Marshal(difyReq)
